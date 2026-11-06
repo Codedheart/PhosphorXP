@@ -1,0 +1,33 @@
+PHOSPHOR XP  -  EXP/hour overlay for MapleStory Worlds (Artale)
+================================================================
+
+No install needed.
+
+1. Right-click the zip > "Extract All..." > Extract.
+   (Don't run it from inside the zip, and keep the folder together:
+    PhosphorXP.exe needs the "_internal" folder next to it.)
+
+2. Double-click PhosphorXP.exe.
+   If Windows says "Windows protected your PC": click "More info",
+   then "Run anyway". (It shows that for any small app that isn't
+   signed by a big company.)
+
+3. Run the game in Windowed or Borderless mode.
+
+4. Right-click the overlay > "Select EXP region..." and drag a box
+   around the EXP numbers, e.g.  68,601 [71.68%]
+   Optional: open your inventory, then "Select meso region..." and
+   box the white meso field.
+
+Drag the overlay anywhere. Double-click it for compact view.
+Right-click for everything else (pause, reset, color palettes...).
+
+Hotkeys:  Ctrl+Shift+F6 pause   Ctrl+Shift+F7 reset
+          Ctrl+Shift+F8 click-through on/off   Ctrl+Shift+F9 compact
+
+Your settings are saved in %APPDATA%\PhosphorXP.
+
+Is it safe for the game? It only takes screenshots of the two small
+areas you select (like OBS or Discord). It never touches the game's
+memory or files and never presses keys for you. Still, any 3rd-party
+tool is used at your own risk.
