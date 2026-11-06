@@ -8,7 +8,7 @@ __pycache__/
 build/
 dist/
 *.spec
-PhosphorXP-share.zip
+PhosphorXP-windows.zip
 
 # Font is fetched by run.bat / build.bat
 phosphor/assets/VT323-Regular.ttf

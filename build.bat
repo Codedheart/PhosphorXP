@@ -1,7 +1,7 @@
 @echo off
 rem ============================================================================
 rem  Builds a share-ready copy of Phosphor XP that needs NO Python:
-rem     PhosphorXP-share.zip   ->  friends unzip it and run PhosphorXP.exe
+rem     PhosphorXP-windows.zip   ->  friends unzip it and run PhosphorXP.exe
 rem  Only the person building needs Python (3.10+). Run this on Windows.
 rem ============================================================================
 cd /d "%~dp0"
@@ -45,14 +45,14 @@ if exist "dist\PhosphorXP\third_party" rmdir /s /q "dist\PhosphorXP\third_party"
 xcopy /e /i /q third_party "dist\PhosphorXP\third_party" >nul
 
 echo Zipping...
-if exist PhosphorXP-share.zip del PhosphorXP-share.zip
-powershell -NoProfile -Command "Compress-Archive -Path 'dist\PhosphorXP' -DestinationPath 'PhosphorXP-share.zip' -CompressionLevel Optimal" || goto :err
+if exist PhosphorXP-windows.zip del PhosphorXP-windows.zip
+powershell -NoProfile -Command "Compress-Archive -Path 'dist\PhosphorXP' -DestinationPath 'PhosphorXP-windows.zip' -CompressionLevel Optimal" || goto :err
 
 echo.
-echo  Done!  Send your friends:  %CD%\PhosphorXP-share.zip
+echo  Done!  Send your friends:  %CD%\PhosphorXP-windows.zip
 echo  (They unzip it and double-click PhosphorXP\PhosphorXP.exe - no Python needed.)
 echo.
-explorer /select,"%CD%\PhosphorXP-share.zip"
+explorer /select,"%CD%\PhosphorXP-windows.zip"
 pause
 exit /b 0
 
