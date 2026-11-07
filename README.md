@@ -1,27 +1,30 @@
 # Phosphor XP
 
 A small always-on-top EXP/hour overlay for **MapleStory Worlds (Artale / Classic)**, with a
-green (or amber) CRT-terminal look. It reads the EXP numbers and the inventory meso count off
+CRT-terminal look and 18 color palettes. It reads the EXP numbers and the inventory meso count off
 your screen, the same way a screen recorder would.
 
 ```
 PHOSPHOR-XP █              ● 00:20:04
 EXP / HOUR                  9.30% LV/H
-1,200,300
-5M  1.26M                  10M 1.22M
+1,200,300                     5M 1.26M
+                             10M 1.22M
 GAIN 67,003 (70.0%)             LV +1
 NEXT LV 00:06:09              @71.68%
 MESO/H +45.2K                NET 15.1K
 > EXP 68,601 [71.68%]
 ```
 
-## Quick start
+## Download (no Python needed)
 
-1. Install Python 3.10+ from python.org (tick the **py launcher**).
-2. Double-click **`run.bat`**. The first run sets up a `.venv` and fetches the VT323 CRT font.
-   To build a standalone `.exe` instead, run **`build.bat`**. The app is created in
-   `dist\PhosphorXP\`; keep that folder together.
-3. Start the game in **windowed or borderless** mode. Exclusive fullscreen hides overlays and can
+**[⬇ Download the latest version](../../releases/latest)**, then grab **`PhosphorXP-windows.zip`**
+under *Assets*.
+
+1. Right-click the zip, choose **Extract All…**, then **Extract**. Don't run it from inside the zip,
+   and keep the folder together: `PhosphorXP.exe` needs the `_internal` folder next to it.
+2. Double-click **`PhosphorXP.exe`**. If Windows says "Windows protected your PC", click
+   **More info**, then **Run anyway**. Windows shows this for small apps that aren't code-signed.
+3. Run the game in **windowed or borderless** mode. Exclusive fullscreen hides overlays and can
    make screen grabs come back black.
 4. Right-click the overlay and choose **Select EXP region…**. You'll see a frozen screenshot of the
    game: drag a box around the numbers after `EXP.` (for example `68,601 [71.68%]`). The status
@@ -30,20 +33,8 @@ MESO/H +45.2K                NET 15.1K
    Mesos only update while the inventory is open, so open it now and then.
 
 Regions are saved relative to the game window, so you can move the game without redoing them.
-If you change the game's resolution or UI size, select them again.
-
-## Sharing with friends (no Python needed)
-
-On your PC, double-click **`build.bat`**. It takes a few minutes the first time. When it
-finishes, it opens the folder with **`PhosphorXP-share.zip`** in it.
-
-Send your friends that zip. They right-click it, choose **Extract All**, and double-click
-`PhosphorXP\PhosphorXP.exe`. Python and everything the app needs are bundled inside, and a
-`READ ME FIRST.txt` walks them through setup.
-
-Windows may say "Windows protected your PC" the first time, because the app isn't code-signed.
-They click **More info**, then **Run anyway**. Each friend's settings and regions are stored on
-their own PC.
+If you change the game's resolution or UI size, select them again. All settings are saved in
+`%APPDATA%\PhosphorXP` and carry over to new versions.
 
 ## Controls
 
@@ -111,10 +102,30 @@ like this are widely used, but using one is still your call under the game's ter
 
 ## Development
 
+**Run from source** (needs Python 3.10+ from python.org): double-click **`run.bat`**. The first run
+sets up a `.venv`, installs the dependencies and fetches the VT323 font.
+
+**Tests:**
+
 ```
 py -3 -m pip install -r requirements.txt pytest
 py -3 -m pytest tests
 ```
+
+**Making a release:** the download is built on GitHub's servers by
+`.github/workflows/release.yml`. Push a version tag and it builds the `.exe`, runs the tests and
+publishes a Release with `PhosphorXP-windows.zip` attached:
+
+```
+git tag v1.0
+git push origin v1.0
+```
+
+In GitHub Desktop: **History**, right-click the commit, **Create Tag…** (e.g. `v1.0`), then
+**Push origin**. To test a build without publishing, go to **Actions**, open **Build Windows
+release** and click **Run workflow**. The zip appears on the run's page.
+
+To build the same zip locally instead, double-click **`build.bat`**.
 
 - `phosphor/reader.py`: pixel-font reader (numpy only).
 - `phosphor/stats.py`: EXP and meso bookkeeping.

@@ -67,6 +67,7 @@ class Overlay:
 
         self.debug_win: tk.Toplevel | None = None
         self.fx: LevelUpFX | None = None
+        self._menu_open = False
         self.hotkeys = winapi.Hotkeys(self.cfg["hotkeys"], self.cmds.put)
         self.root.after_idle(self._after_mapped)
         self.root.after(250, self._tick)
@@ -139,6 +140,9 @@ class Overlay:
     def _keep_on_top(self) -> None:
         # some games re-assert their own z-order; nudge ourselves back up
         self.root.after(2000, self._keep_on_top)
+        # never jump above our own open menu (that's what covered it)
+        if self._menu_open:
+            return
         if self.root.state() != "withdrawn":
             self.root.attributes("-topmost", True)
             self.root.lift()
@@ -494,11 +498,41 @@ class Overlay:
         m.add_separator()
         m.add_command(label="Exit", command=self.quit)
         self._menu_vars = (v, v2, v3, ov, iv, tv)  # keep references alive
-        winapi.foreground(self.root.winfo_id())
+        x, y = self._menu_pos(m, e.x_root, e.y_root)
+        self._menu_open = True
+        m.bind("<Unmap>", lambda _e: self._menu_closed())
+        winapi.foreground(self.root.winfo_id())   # so a click elsewhere closes the menu
         try:
-            m.tk_popup(e.x_root, e.y_root)
+            m.tk_popup(x, y)                      # blocks on Windows until the menu closes
         finally:
             m.grab_release()
+            if winapi.IS_WIN:
+                self._menu_closed()
+
+    def _menu_closed(self) -> None:
+        # give Windows a moment to finish closing submenus before we re-assert topmost
+        self.root.after(300, lambda: setattr(self, "_menu_open", False))
+
+    def _menu_pos(self, m: tk.Menu, cx: int, cy: int) -> tuple[int, int]:
+        """Open the menu beside the overlay rather than on top of it."""
+        m.update_idletasks()
+        mw, mh = m.winfo_reqwidth(), m.winfo_reqheight()
+        ox, oy = self.root.winfo_rootx(), self.root.winfo_rooty()
+        ow, oh = self.root.winfo_width(), self.root.winfo_height()
+        wa = winapi.work_area(self.root.winfo_id()) or (
+            0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+        left, top, right, bottom = wa
+        gap = 4
+        if ox + ow + gap + mw <= right:          # room on the right
+            x = ox + ow + gap
+        elif ox - gap - mw >= left:              # room on the left
+            x = ox - gap - mw
+        else:                                    # no room either side: below/above instead
+            x = min(max(cx, left), right - mw)
+            y = oy + oh + gap if oy + oh + gap + mh <= bottom else max(top, oy - gap - mh)
+            return int(x), int(y)
+        y = min(max(cy - 10, top), bottom - mh)
+        return int(x), int(max(top, y))
 
     def _palette_menu(self, parent):
         th = self.th

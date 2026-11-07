@@ -57,6 +57,7 @@ if IS_WIN:
         ("PostThreadMessageW", [wintypes.DWORD, U, wintypes.WPARAM, L], wintypes.BOOL),
         ("SetForegroundWindow", [H], wintypes.BOOL),
         ("GetSystemMetrics", [I], I),
+        ("MonitorFromWindow", [H, wintypes.DWORD], wintypes.HMONITOR),
     ):
         _f = getattr(user32, _name)
         _f.argtypes, _f.restype = _args, _res
@@ -119,6 +120,28 @@ def virtual_screen() -> tuple[int, int, int, int] | None:
         return None
     g = user32.GetSystemMetrics
     return g(76), g(77), g(78), g(79)
+
+
+if IS_WIN:
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+
+
+def work_area(tk_hwnd: int) -> tuple[int, int, int, int] | None:
+    """(left, top, right, bottom) of the usable area of the monitor our window is on."""
+    if not IS_WIN:
+        return None
+    mon = user32.MonitorFromWindow(_top(tk_hwnd), 2)  # MONITOR_DEFAULTTONEAREST
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if not mon or not user32.GetMonitorInfoW(mon, ctypes.byref(mi)):
+        return None
+    r = mi.rcWork
+    return r.left, r.top, r.right, r.bottom
 
 
 def foreground(tk_hwnd: int) -> None:
