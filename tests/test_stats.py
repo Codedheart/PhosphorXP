@@ -5,8 +5,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from phosphor.stats import ActiveClock, ExpTracker, MesoTracker, req_interval  # noqa: E402
 
-R1 = 95_706          # EXP needed for "level A" (68,601 is 71.68%)
-R2 = 100_951         # next level
+R1 = 95_700          # level 30 (68,601 is 71.68%)
+R2 = 108_480         # level 31
 
 
 def reading(exp, req, trunc=False):
@@ -144,3 +144,47 @@ def test_level_up_through_zero_low_pct():
     t.feed(10, 0, 0.0)
     t.feed(20, *reading(30, R2))     # 0.03%: range overlaps the old level
     assert t.levels == 1 and t.lost == 0
+
+
+R60 = 1_209_994      # level 60
+R61 = 1_276_301      # level 61
+
+
+def test_level_identified_from_table():
+    t = ExpTracker()
+    t.feed(0, *reading(68_601, R1))
+    assert t.level == 30 and t.req == (R1, R1)
+
+
+def test_percentage_only_above_a_million():
+    """The HUD hides the number at 1,000,000+ EXP; the % alone must keep tracking."""
+    t = ExpTracker()
+    t.feed(0, *reading(990_000, R60))
+    assert t.level == 60
+    t.feed(10, *reading(999_000, R60))
+    for i, e in enumerate((1_030_000, 1_065_000, 1_100_000)):
+        assert t.feed_pct(20 + i, round(e / R60 * 100, 2)) == "gain"
+    assert abs(t.gained - 110_000) < 250          # 0.01% of R60 is ~121 EXP
+    for i, e in enumerate((1_140_000, 1_175_000, 1_209_000)):
+        t.feed_pct(30 + i, round(e / R60 * 100, 2))
+    # level up while percentage-only, into a level that shows the number again
+    assert t.feed(50, *reading(3_000, R61)) == "pending"
+    assert t.feed(60, *reading(4_000, R61)) == "level"
+    assert t.level == 61
+    assert abs(t.gained - (1_209_994 - 990_000 + 4_000)) < 300
+
+
+def test_percentage_only_needs_level_until_known():
+    t = ExpTracker()
+    assert t.feed_pct(0, 85.00) == "need_level"
+    t.set_level(60)
+    assert t.feed_pct(10, 85.00) == "baseline"
+    assert t.feed_pct(20, 85.50) == "gain"
+    assert abs(t.gained - 0.005 * R60) < 2
+
+
+def test_level_survives_session_reset():
+    t = ExpTracker()
+    t.feed(0, *reading(68_601, R1))
+    t.reset()
+    assert t.level == 30 and not t.started

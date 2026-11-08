@@ -8,8 +8,10 @@ reading we can bound the EXP the level requires:
 (covers both rounding and truncation of the displayed percentage).
 
 Readings from the same level must agree on R, which gives a free misread
-filter and lets us handle level-ups without an EXP table: the EXP gained over
-a level-up is (R - last_exp) + new_exp.
+filter; matching R against the EXP table also tells us the character's level.
+Once the level is known, R is exact, and percentage-only readings (the HUD drops
+the number once you have 1,000,000+ EXP in a level) convert back to EXP.
+The EXP gained over a level-up is (R - last_exp) + new_exp.
 
 Times passed in are *active* seconds (a clock that stops while paused), so
 rates never include paused time.
@@ -19,6 +21,8 @@ from __future__ import annotations
 import bisect
 import math
 from dataclasses import dataclass, field
+
+from .exptable import EXP_TO_NEXT, levels_matching
 
 INF = float("inf")
 
@@ -71,11 +75,61 @@ class ExpTracker:
     totals: list[float] = field(default_factory=list)
     pending: _Pending | None = None
     rejected: int = 0
+    level: int | None = None        # character level, when known
     _rebase_next: bool = False
 
     # ------------------------------------------------------------- input
     def reset(self) -> None:
+        level = self.level                  # a new session is still the same character
         self.__init__(confirm=self.confirm, big_jump=self.big_jump)  # type: ignore[misc]
+        self.level = level
+
+    # -------------------------------------------------------------- level
+    def set_level(self, level: int | None) -> None:
+        """Tell the tracker the character's level (e.g. from the user or a saved setting)."""
+        if level is None or level not in EXP_TO_NEXT:
+            self.level = None
+            return
+        self.level = level
+        r = float(EXP_TO_NEXT[level])
+        self.req = (r, r)
+        if self.started:
+            self.exp = int(round(self.pct / 100.0 * r))   # re-anchor, nothing counted
+
+    def _identify(self) -> None:
+        """Pin the level (and so the exact requirement) from the EXP table."""
+        lo, hi = self.req
+        if self.level is not None:
+            r = EXP_TO_NEXT.get(self.level)
+            if r is not None and lo * 0.998 <= r <= hi * 1.002:
+                self.req = (float(r), float(r))
+                return
+            self.level = None
+        if hi == INF:
+            return
+        cands = levels_matching(lo, hi)
+        if len(cands) == 1:
+            self.level = cands[0]
+            r = float(EXP_TO_NEXT[self.level])
+            self.req = (r, r)
+
+    def known_req(self) -> float | None:
+        if self.level is not None and self.level in EXP_TO_NEXT:
+            return float(EXP_TO_NEXT[self.level])
+        lo, hi = self.req
+        if hi != INF and lo > 0 and hi / lo < 1.003:
+            return (lo + hi) / 2.0
+        return None
+
+    def feed_pct(self, t: float, pct: float) -> str:
+        """A percentage-only reading (no EXP number on the HUD)."""
+        r = self.known_req()
+        if r is None:
+            return "need_level"
+        if (self.started and self.pct - pct >= LEVEL_DROP_PCT and self.level is not None
+                and self.level + 1 in EXP_TO_NEXT):
+            r = float(EXP_TO_NEXT[self.level + 1])     # levelled up into the next level
+        return self.feed(t, int(round(pct / 100.0 * r)), pct)
 
     def rebase(self) -> None:
         """Take the next reading as the new baseline without counting the change (after a pause)."""
@@ -90,6 +144,12 @@ class ExpTracker:
         return (lo + hi) / 2.0
 
     def feed(self, t: float, exp: int, pct: float) -> str:
+        res = self._feed(t, exp, pct)
+        if res != "pending":
+            self._identify()
+        return res
+
+    def _feed(self, t: float, exp: int, pct: float) -> str:
         iv = req_interval(exp, pct)
         if not self.started or self._rebase_next:
             same_level = self.started and _overlap(iv, self.req)
@@ -116,6 +176,7 @@ class ExpTracker:
                 r = self.req_mid if self.req_mid is not None else self.req[0]
                 self.gained += max(0.0, r - self.exp)
                 self.levels += 1
+                self._bump_level()
                 self._set(0, 0.0, iv)
             self._record(t)
 
@@ -147,6 +208,10 @@ class ExpTracker:
         return self._pend(t, "rebase", exp, pct, iv)
 
     # ----------------------------------------------------------- helpers
+    def _bump_level(self) -> None:
+        if self.level is not None:
+            self.level = self.level + 1 if self.level + 1 in EXP_TO_NEXT else None
+
     def _set(self, exp: int, pct: float, req: tuple[float, float]) -> None:
         self.exp, self.pct, self.req = exp, pct, req
 
@@ -177,8 +242,10 @@ class ExpTracker:
             r = self.req_mid if self.req_mid is not None else self.req[0]
             self.gained += max(0.0, r - self.exp) + exp
             self.levels += 1
+            self._bump_level()
             self._set(exp, pct, p.interval)
         else:  # rebase: different character / unexplained jump; don't count it
+            self.level = None
             self._set(exp, pct, p.interval)
             self.rejected += 1
             return "rebased"

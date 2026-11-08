@@ -34,6 +34,7 @@ class Overlay:
         now = time.monotonic()
         self.clock = ActiveClock(now)
         self.exp = ExpTracker()
+        self.exp.set_level(self.cfg.get("level"))      # remembered from last time
         self.meso = MesoTracker()
         self.paused = False
         self.auto_idle = False
@@ -259,7 +260,8 @@ class Overlay:
         self._set("gain", f"GAIN {fmt_int(g)}" + (f" ({gp:.1f}%)" if gp is not None else ""))
         self._set("lv", f"LV +{self.exp.levels}" if self.exp.levels else "")
         self._set("eta", f"NEXT LV {fmt_dur(eta)}")
-        self._set("pos", f"@{self.exp.pct:.2f}%" if self.exp.started else "")
+        lv = f"LV{self.exp.level} " if self.exp.level else ""
+        self._set("pos", f"{lv}@{self.exp.pct:.2f}%" if self.exp.started else lv.strip())
         if mr:
             self._set("meso", f"MESO/H {'+' if mr[0] >= 0 else ''}{fmt_short(mr[0])}")
             self._set("mnet", f"NET {fmt_short(self.meso.net)}")
@@ -326,12 +328,26 @@ class Overlay:
             return
         if r.kind == "exp" and r.ok:
             self.last_exp_ok_at = r.t
-            self.last_exp_text = f"EXP {r.value.exp:,} [{r.value.pct:.2f}%]"
+            pct_only = r.value.exp is None
+            if pct_only:
+                req = self.exp.known_req()
+                est = f"~{fmt_short(r.value.pct / 100 * req)} " if req else ""
+                self.last_exp_text = f"EXP {est}[{r.value.pct:.2f}%]"
+            else:
+                self.last_exp_text = f"EXP {r.value.exp:,} [{r.value.pct:.2f}%]"
             if self.paused:
                 return
             t = self.clock.elapsed(r.t)
             levels_before = self.exp.levels
-            res = self.exp.feed(t, r.value.exp, r.value.pct)
+            if pct_only:
+                res = self.exp.feed_pct(t, r.value.pct)
+                if res == "need_level":
+                    self.flash("ONLY % SHOWN - RIGHT-CLICK > SET LEVEL", 4)
+            else:
+                res = self.exp.feed(t, r.value.exp, r.value.pct)
+            if self.exp.level != self.cfg.get("level"):
+                self.cfg["level"] = self.exp.level
+                self.cfg.save()
             if self.exp.levels > levels_before:
                 self.celebrate()
             if res in ("gain", "level", "jump"):
@@ -397,6 +413,44 @@ class Overlay:
             "meso_net": self.meso.net,
             "meso_per_hr": int(mr[0]) if mr else "",
         })
+
+    def ask_level(self) -> None:
+        """Small themed prompt. Only needed when the HUD shows % only (1M+ EXP) and
+        the level hasn't been learned from an EXP number yet."""
+        th = self.th
+        win = tk.Toplevel(self.root, bg=th["bg"], highlightthickness=1, highlightbackground=th["dim"])
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        tk.Label(win, text="CHARACTER LEVEL", fg=th["mid"], bg=th["bg"], font=self.f_small).pack(
+            padx=14, pady=(10, 4))
+        var = tk.StringVar(value=str(self.exp.level or ""))
+        ent = tk.Entry(win, textvariable=var, width=5, justify="center", font=self.f_big,
+                       fg=th["fg"], bg=th["bg"], insertbackground=th["fg"], relief="flat",
+                       highlightthickness=1, highlightbackground=th["dim"], highlightcolor=th["fg"])
+        ent.pack(padx=14)
+        msg = tk.Label(win, text="ENTER = OK   ESC = CANCEL", fg=th["dim"], bg=th["bg"], font=self.f_small)
+        msg.pack(padx=14, pady=(4, 10))
+
+        def ok(_e=None):
+            try:
+                lv = int(var.get())
+            except ValueError:
+                lv = 0
+            if not 1 <= lv <= 99:
+                msg.configure(text="LEVEL 1-99", fg=th["warn"])
+                return
+            self.exp.set_level(lv)
+            self.cfg["level"] = lv
+            self.cfg.save()
+            win.destroy()
+            self.flash(f"LEVEL SET TO {lv}", 4)
+
+        ent.bind("<Return>", ok)
+        win.bind("<Escape>", lambda _e: win.destroy())
+        win.update_idletasks()
+        x, y = self._menu_pos(win, self.root.winfo_rootx(), self.root.winfo_rooty())
+        win.geometry(f"+{x}+{y}")
+        win.after(50, lambda: (winapi.foreground(win.winfo_id()), ent.focus_force(), ent.select_range(0, "end")))
 
     def celebrate(self) -> None:
         self.flash(f"*** LEVEL UP *** (+{self.exp.levels} THIS SESSION)", 8)
@@ -468,6 +522,7 @@ class Overlay:
         if self.cfg["meso_region"]:
             m.add_command(label="Clear meso region", command=self._clear_meso)
         m.add_command(label="What it sees...", command=self.show_debug)
+        m.add_command(label="Set level...", command=self.ask_level)
         m.add_command(label="Test level-up animation", command=self.celebrate)
         m.add_separator()
         v = tk.BooleanVar(value=self.cfg["compact"])
@@ -675,7 +730,8 @@ class Overlay:
                 txt_l.configure(text=("read: " + self.engine.last_text.get(kind, "")) if region else "no region set")
             g = self.engine.game_rect
             info.configure(text=f"game window: {'%dx%d at %d,%d' % (g[2], g[3], g[0], g[1]) if g else 'not found'}\n"
-                                f"level needs ~{fmt_int(self.exp.req_mid)} EXP   rejected/rebased: {self.exp.rejected}")
+                                f"level: {self.exp.level or '?'}   needs ~{fmt_int(self.exp.known_req() or self.exp.req_mid)} EXP"
+                                f"   rejected/rebased: {self.exp.rejected}")
             win.after(1000, refresh)
 
         refresh()

@@ -53,7 +53,9 @@ def test_parse_exp_variants():
     assert parse_exp("221 ,609 75.32%]") == (221_609, 75.32)     # faint '['
     assert parse_exp("68.601 [71 .68%]") == (68_601, 71.68)      # comma read as period
     assert parse_exp("68,60 [71.68%]") is None                    # bad grouping
-    assert parse_exp("[71.68%]") is None
+    assert parse_exp("[71.68%]") == (None, 71.68)                  # % only (1M+ EXP)
+    assert parse_exp("1[. 78.82%") == (None, 78.82)                # bare %, label debris
+    assert parse_exp("178.82%") is None
 
 
 def test_meso_fixtures():
@@ -68,3 +70,13 @@ def test_blank_regions_read_nothing():
     assert read_meso(np.full((20, 120, 3), 255, np.uint8))[0] is None
     noise = np.random.default_rng(1).integers(0, 255, (30, 150, 3), dtype=np.uint8)
     assert read_exp(noise)[0] is None
+
+
+def test_percentage_only_readouts():
+    """At 1,000,000+ EXP in a level the HUD shows only the percentage.
+    Fixtures: the real HUD crops above with the number removed."""
+    for name in ("pctonly_exp_win-1024x768.png", "pctonly_exp_win-1920x1080.png",
+                 "pctonly_exp_full-1280x720.png", "pctonly_bare_exp_win-1024x768.png"):
+        r, _ = read_exp(load(name))
+        assert r is not None, name
+        assert (r.exp, r.pct) == (None, 71.68), (name, r)

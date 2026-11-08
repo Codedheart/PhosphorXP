@@ -59,6 +59,12 @@ hotkeys in `config.json`.
 - **% LV/H**: the hourly rate as a percentage of your current level.
 - **NEXT LV**: time to level, based on your session EXP/HOUR.
 - **MESO/H**: net change in your meso balance per hour, so shop spending counts against it.
+- **Over 1,000,000 EXP:** once you have a million EXP in a level, the HUD shows only the percentage.
+  Phosphor XP keeps tracking by converting that percentage to EXP with the level's EXP table. It
+  learns your level the first time it sees the EXP number, follows your level-ups and remembers the
+  level between sessions. If the first time you use it you're already past 1M, right-click and
+  choose **Set level…** once. The overlay shows the level it's using next to your percentage
+  (e.g. `LV62 @71.68%`).
 - **Auto-pause when no EXP** (off by default): stops the clock after N seconds without EXP and removes the idle time past that point,
   so town trips don't drag your rate down.
 

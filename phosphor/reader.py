@@ -162,13 +162,22 @@ def read_line(ink: np.ndarray, font: Font, band_profile: np.ndarray,
     """Decode a line of text. ``accept(text)`` says whether a result parses.
 
     Tries the cached hint first, then searches scale, sub-pixel phase and blur.
+    ``accept`` may return True/False, or a penalty (0 = best) / None (reject).
     """
+    def penalty(t: str) -> float | None:
+        if accept is None:
+            return 0.0
+        v = accept(t)
+        if v is None or v is False:
+            return None
+        return 0.0 if v is True else float(v)
+
     def lb(h: Hint) -> int | None:
         return None if label_before_px is None else int((label_before_px - h.x0) / h.s)
 
     if hint is not None:
         t, c = decode(resample(ink, hint.x0, hint.y0, hint.s, font.rows), font, lb(hint), hint.blur)
-        if accept is None or accept(t):
+        if penalty(t) is not None:
             return t, c, hint
 
     b = _band(band_profile)
@@ -191,8 +200,8 @@ def read_line(ink: np.ndarray, font: Font, band_profile: np.ndarray,
                 for blur in blurs:
                     h = Hint(x0=k * s / 3, y0=y0, s=float(s), blur=blur)
                     t, c = decode(nat, font, lb(h), blur)
-                    ok = accept is None or accept(t)
-                    score = c + (0 if ok else 10.0)
+                    pen = penalty(t)
+                    score = c + (10.0 if pen is None else pen)
                     if best is None or score < best[0]:
                         best = (score, c, t, h)
     if best is None:
@@ -204,11 +213,13 @@ def read_line(ink: np.ndarray, font: Font, band_profile: np.ndarray,
 # ------------------------------------------------------------------ EXP bar
 _STRICT_RE = re.compile(r"(\d[\d,.]*)\[(\d{1,3})\.(\d{2})%\]?")
 _LOOSE_RE = re.compile(r"(\d[\d,. ]*?)\s+(\d{1,3})\.(\d{2})%\]")
+# percentage on its own ("[78.82%]" or "78.82%"): the HUD drops the number at 1,000,000+ EXP
+_PCT_ONLY_RE = re.compile(r"(?<![\d,])\[?(\d{1,3})\.(\d{2})%")
 
 
 @dataclass
 class ExpReading:
-    exp: int             # EXP into the current level, as displayed
+    exp: int | None      # EXP into the current level, as displayed (None: % only)
     pct: float           # 0..100, as displayed (2 decimals)
     text: str
     cost: float
@@ -223,12 +234,17 @@ def _parse_int(s: str) -> int | None:
     return int(s.replace(",", ""))
 
 
-def parse_exp(text: str) -> tuple[int, float] | None:
-    """'68,601 [71.68%]' -> (68601, 71.68). Tolerates split digits and a faint '['."""
+def parse_exp(text: str) -> tuple[int | None, float] | None:
+    """'68,601 [71.68%]' -> (68601, 71.68); '[78.82%]' -> (None, 78.82).
+    Tolerates split digits and a faint '['."""
     t = re.sub(r"\s*([,.%])\s*", r"\1", text)
     ms = list(_STRICT_RE.finditer(t.replace(" ", ""))) or list(_LOOSE_RE.finditer(t))
     if not ms:
-        return None
+        po = list(_PCT_ONLY_RE.finditer(t))
+        if not po:
+            return None
+        pct = int(po[-1].group(1)) + int(po[-1].group(2)) / 100.0
+        return (None, pct) if pct <= 100.0 else None
     m = ms[-1]
     tok = m.group(1).replace(" ", "")
     val = None
@@ -277,9 +293,31 @@ def read_exp(rgb: np.ndarray, hint: Hint | None = None) -> tuple[ExpReading | No
         band = g.sum(axis=1)
         label_before = float(lo)
     else:
+        # no brackets: the bold "EXP." label (taller than digits) sits at the left,
+        # so measure the text band on the right half of the inked columns only
         band = white.sum(axis=1)
-    text, cost, h = read_line(ink, EXP_FONT, band, hint=hint,
-                              accept=lambda t: parse_exp(t) is not None,
+        line = _band(band)                        # label + text rows
+        if line is not None:
+            rows = slice(line[0], line[1] + 1)
+            inked = np.where(white[rows].max(axis=0) > 0.5)[0]
+            # ignore window-frame bits touching the edges of the selection
+            runs = [r for r in np.split(inked, np.where(np.diff(inked) > 3)[0] + 1)
+                    if len(r) and r[0] > 0 and r[-1] < white.shape[1] - 1]
+            inked = np.concatenate(runs) if runs else inked
+            if len(inked) >= 4:
+                mid = (inked[0] + inked[-1]) // 2
+                sub = np.zeros_like(band)
+                sub[rows] = white[rows, mid:inked[-1] + 1].sum(axis=1)
+                band = sub
+        label_before = float(rgb.shape[1])    # still drop the label from the decode
+
+    def accept(t: str) -> float | None:
+        p = parse_exp(t)
+        if p is None:
+            return None
+        return 0.0 if p[0] is not None else 0.02   # prefer readings that include the number
+
+    text, cost, h = read_line(ink, EXP_FONT, band, hint=hint, accept=accept,
                               label_before_px=label_before)
     p = parse_exp(text)
     if p is None or cost > 0.6:
