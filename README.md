@@ -42,7 +42,7 @@ If you change the game's resolution or UI size, select them again. All settings 
 |---|---|
 | Drag | Move the overlay |
 | Double-click | Switch between full and compact view |
-| Right-click | Menu: pause, reset, regions, **What it sees…**, **Test level-up animation**, opacity, auto-pause, **Color palette** (18 themes, each shown in its own colors) |
+| Right-click | Menu: pause, reset, regions, **What it sees…**, **Test level-up animation**, opacity, auto-pause, **Color palette** (18 themes, each shown in its own colors), **Check for updates** and the automatic-check toggle, the current version |
 | `Ctrl+Shift+F6` | Pause / resume (EXP gained while paused isn't counted) |
 | `Ctrl+Shift+F7` | Reset the session (the old one is saved to `history.csv`) |
 | `Ctrl+Shift+F8` | Click-through on/off. While it's on, mouse clicks pass through to the game, so use this key to turn it off again |
@@ -85,6 +85,28 @@ range. This means:
 The reader doesn't use an OCR engine. It matches the game's own pixel font after scaling the crop
 back to its native size, and it handles crisp 1:1 and smoothly scaled UI (tested at 1.0×–3.9×).
 
+## Updates
+
+The downloaded app checks GitHub for a newer release a few seconds after it starts, then every
+6 hours. When there is one, the status line shows **UPDATE v1.x >**. Click it, then **INSTALL**.
+It downloads the new zip, checks it (size, SHA-256 and zip integrity), closes, swaps in the new
+files and reopens with **UPDATED TO v1.x**. If anything goes wrong, it puts the old version back
+and says **UPDATE FAILED - OLD VERSION KEPT**.
+
+Right-click has **Check for updates**, a toggle to turn the automatic checks off, and shows the
+version you're running.
+
+Your settings, regions, level and session history are stored in `%APPDATA%\PhosphorXP`, not in
+the app folder, so updates never touch them. Any other files you keep in the app folder are left
+alone too.
+
+The app has to be able to change its own folder, so keep the **PhosphorXP** folder somewhere you
+own, like **Documents** or the **Desktop**. If it's in Program Files, or was opened straight from
+inside the zip, it explains what to do and offers **DOWNLOAD MANUALLY** instead.
+
+Running from source (`run.bat`) never installs anything. **Check for updates** just tells you
+the latest version so you can `git pull`.
+
 ## Anti-cheat notes
 
 Phosphor XP only does what screen recorders, OBS and Discord overlays do:
@@ -101,7 +123,9 @@ Phosphor XP only does what screen recorders, OBS and Discord overlays do:
 
 It never opens the game process, reads or writes game memory or files, injects DLLs, hooks
 DirectX or input, or sends keystrokes or clicks. It doesn't need admin rights, so don't run it as
-admin. It makes no network connections.
+admin. Its only network traffic is the update check (one small request to GitHub's API at
+startup and every 6 hours) and the update download when you click INSTALL. Turn the automatic
+check off in the menu if you prefer.
 
 There's no guarantee about how Nexon treats any third-party program. Read-only screen trackers
 like this are widely used, but using one is still your call under the game's terms of service.
@@ -120,7 +144,10 @@ py -3 -m pytest tests
 
 **Making a release:** the download is built on GitHub's servers by
 `.github/workflows/release.yml`. Push a version tag and it builds the `.exe`, runs the tests and
-publishes a Release with `PhosphorXP-windows.zip` attached:
+publishes a Release with `PhosphorXP-windows.zip` attached. The tag is also the app's version: the
+workflow writes it into `phosphor/_build_version.py` (gitignored) before building, so installed
+copies know what they're running and can update themselves. Builds that aren't from a tag report
+`dev` and never auto-install.
 
 ```
 git tag v1.0
@@ -138,5 +165,6 @@ To build the same zip locally instead, double-click **`build.bat`**.
 - `phosphor/engine.py`: capture thread.
 - `phosphor/winapi.py`: user32 helpers.
 - `phosphor/ui.py`: the Tk overlay.
+- `phosphor/updater.py`: self-update from GitHub Releases (stdlib only).
 
 The reader tests use real HUD crops (see THIRD_PARTY.md).

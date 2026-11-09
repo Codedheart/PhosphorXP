@@ -1,17 +1,22 @@
 """The always-on-top CRT overlay (Tkinter, stdlib only)."""
 from __future__ import annotations
 
+import os
 import queue
+import sys
+import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+import webbrowser
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageTk
 
-from . import winapi
+from . import updater, winapi
 from .config import APP_NAME, Config, append_history
+from .version import VERSION
 from .engine import Engine, Result, grab, new_mss
 from .reader import read_exp, read_meso
 from .celebrate import LevelUpFX
@@ -19,6 +24,8 @@ from .stats import ActiveClock, ExpTracker, MesoTracker, fmt_dur, fmt_int, fmt_s
 
 from . import themes
 W_FULL = 300
+UPDATE_CHECK_MS = 6 * 3600 * 1000      # re-check GitHub every 6 hours while open
+UPDATE_FIRST_MS = 4000                 # first check a few seconds after startup
 ASSETS = Path(__file__).parent / "assets"
 
 
@@ -45,6 +52,12 @@ class Overlay:
         self.last_exp_text = ""
         self.meso_seen_at = 0.0
         self.blink = False
+        self.upd_q: "queue.Queue[tuple]" = queue.Queue()
+        self.update_rel: updater.Release | None = None   # newer release found on GitHub
+        self.update_busy: str | None = None              # status text while downloading
+        self.dialog: Dialog | None = None
+        self._closing = False
+        self._press_at: tuple[int, int] | None = None
 
         self.root = tk.Tk()
         self.root.report_callback_exception = self._log_exc
@@ -74,10 +87,10 @@ class Overlay:
         self.root.after(250, self._tick)
         self.root.after(500, self._blink)
         self.root.after(2000, self._keep_on_top)
+        self.root.after(UPDATE_FIRST_MS, self._auto_check)
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
 
-        if not self.cfg["exp_region"]:
-            self.flash("RIGHT-CLICK > SELECT EXP REGION", 3600)
+        self._report_last_update()
 
     def _after_mapped(self) -> None:
         # Tk creates the real top-level HWND on first map; style it only after that
@@ -140,6 +153,8 @@ class Overlay:
 
     def _keep_on_top(self) -> None:
         # some games re-assert their own z-order; nudge ourselves back up
+        if self._closing:
+            return
         self.root.after(2000, self._keep_on_top)
         # never jump above our own open menu (that's what covered it)
         if self._menu_open:
@@ -244,7 +259,12 @@ class Overlay:
             self._set("c1", f"XP/H {fmt_short(rate)}")
             self._set("c1r", f"5M {fmt_short(r5)}  {state.split()[0]}")
             self._set("c2", f"LV IN {fmt_dur(eta)}")
-            self._set("c2r", f"$ {fmt_short(mr[0]) if mr else '--'}/H")
+            if self.update_busy:
+                self._set("c2r", self.update_busy.replace("DOWNLOADING", "DL"), "warn")
+            elif self.update_rel:
+                self._set("c2r", f"UPD {self.update_rel.tag} >", "warn")
+            else:
+                self._set("c2r", f"$ {fmt_short(mr[0]) if mr else '--'}/H", "mid")
             return
 
         cursor = "█" if self.blink else " "
@@ -274,7 +294,13 @@ class Overlay:
 
         if now < self.status_until:
             self._set("status", self._fit(self.status), "warn")
-        elif self.cfg["exp_region"] and now - self.last_exp_ok_at > 10:
+        elif self.update_busy:
+            self._set("status", self._fit(self.update_busy), "warn")
+        elif self.update_rel:
+            self._set("status", self._fit(f"UPDATE {self.update_rel.tag} >"), "warn")
+        elif not self.cfg["exp_region"]:
+            self._set("status", self._fit("RIGHT-CLICK > SELECT EXP REGION"), "warn")
+        elif now - self.last_exp_ok_at > 10:
             self._set("status", self._fit("> NO EXP READ - RIGHT-CLICK > WHAT IT SEES"), "warn")
         else:
             self._set("status", self._fit(f"> {self.last_exp_text}" if self.last_exp_text else "> READY"), "dim")
@@ -292,20 +318,27 @@ class Overlay:
         self.status_until = time.monotonic() + seconds
 
     def _blink(self) -> None:
+        if self._closing:
+            return
         self.root.after(530, self._blink)
         self.blink = not self.blink
 
     # ----------------------------------------------------------- main loop
     def _tick(self) -> None:
+        if self._closing:
+            return
         try:
             self._tick_body()
         except Exception:
-            import sys
             self._log_exc(*sys.exc_info())
         finally:
-            self.root.after(250, self._tick)
+            if not self._closing:                 # quit() may have run inside the tick
+                self.root.after(250, self._tick)
 
     def _tick_body(self) -> None:
+        self._drain_updates()
+        if self._closing:                         # an update is being installed
+            return
         while True:
             try:
                 cmd = self.cmds.get_nowait()
@@ -487,6 +520,11 @@ class Overlay:
             self._layout()
 
     def quit(self) -> None:
+        if self._closing:
+            return
+        self._closing = True
+        if self.dialog:
+            self.dialog.close()
         self._save_history()
         if self.root.winfo_viewable():
             self.cfg["x"], self.cfg["y"] = self.root.winfo_rootx(), self.root.winfo_rooty()
@@ -498,11 +536,17 @@ class Overlay:
     # ------------------------------------------------------------ dragging
     def _drag_start(self, e) -> None:
         self._dx, self._dy = e.x, e.y
+        self._press_at = (e.x_root, e.y_root)
 
     def _drag_move(self, e) -> None:
         self.root.geometry(f"+{e.x_root - self._dx}+{e.y_root - self._dy}")
 
-    def _drag_end(self, _e) -> None:
+    def _drag_end(self, e) -> None:
+        start, self._press_at = self._press_at, None
+        if start and abs(e.x_root - start[0]) < 4 and abs(e.y_root - start[1]) < 4:
+            if self._on_update_notice(e.x, e.y):     # a click, not a drag
+                self.offer_update()
+                return
         if self.root.winfo_viewable():
             self.cfg["x"], self.cfg["y"] = self.root.winfo_rootx(), self.root.winfo_rooty()
         self.cfg.save()
@@ -551,8 +595,16 @@ class Overlay:
         sub3, tv = self._palette_menu(m)
         m.add_cascade(label="Color palette", menu=sub3)
         m.add_separator()
+        if self.update_rel:
+            m.add_command(label=f"Install update {self.update_rel.tag}...", command=self.offer_update)
+        m.add_command(label="Check for updates", command=lambda: self.check_updates(manual=True))
+        av = tk.BooleanVar(value=bool(self.cfg.get("auto_update", True)))
+        m.add_checkbutton(label="Check for updates automatically", variable=av,
+                          command=lambda: self.set_cfg("auto_update", not self.cfg.get("auto_update", True)))
+        m.add_command(label=f"{APP_NAME} {self._version_label()}", state="disabled")
+        m.add_separator()
         m.add_command(label="Exit", command=self.quit)
-        self._menu_vars = (v, v2, v3, ov, iv, tv)  # keep references alive
+        self._menu_vars = (v, v2, v3, ov, iv, tv, av)  # keep references alive
         x, y = self._menu_pos(m, e.x_root, e.y_root)
         self._menu_open = True
         m.bind("<Unmap>", lambda _e: self._menu_closed())
@@ -692,6 +744,146 @@ class Overlay:
         if not in_game:
             self.flash("NO GAME WINDOW - SAVED AS SCREEN POS", 8)
 
+    # -------------------------------------------------------------- updates
+    @staticmethod
+    def _version_label() -> str:
+        return f"v{VERSION}" if updater.parse_version(VERSION) else "(from source)"
+
+    def _on_update_notice(self, x: int, y: int) -> bool:
+        if not (self.update_rel or self.update_busy):
+            return False
+        key = "c2r" if self.cfg["compact"] else "status"
+        ids = self.items.get(key)
+        box = self.canvas.bbox(ids[-1]) if ids else None
+        return bool(box) and box[0] - 4 <= x <= box[2] + 4 and box[1] - 4 <= y <= box[3] + 4
+
+    def _report_last_update(self) -> None:
+        try:
+            result = updater.take_result()
+        except OSError:
+            return
+        if result == "ok":
+            self.flash(f"UPDATED TO {self._version_label().upper()}", 6)
+        elif result == "fail":
+            self.flash("UPDATE FAILED - OLD VERSION KEPT", 8)
+
+    def _auto_check(self) -> None:
+        if self._closing:
+            return
+        self.root.after(UPDATE_CHECK_MS, self._auto_check)
+        # from source there's nothing to install; `git pull` updates instead
+        if self.cfg.get("auto_update", True) and updater.parse_version(VERSION) and not self.update_busy:
+            self.check_updates(manual=False)
+
+    def check_updates(self, manual: bool) -> None:
+        if manual:
+            self.flash("CHECKING FOR UPDATES...", 10)
+
+        def work():
+            try:
+                self.upd_q.put(("checked", updater.latest_release(), manual, None))
+            except Exception as e:
+                self.upd_q.put(("checked", None, manual, str(e) or "UPDATE CHECK FAILED"))
+        threading.Thread(target=work, daemon=True, name="phosphor-update-check").start()
+
+    def _drain_updates(self) -> None:
+        while True:
+            try:
+                msg = self.upd_q.get_nowait()
+            except queue.Empty:
+                return
+            kind = msg[0]
+            if kind == "checked":
+                _k, rel, manual, err = msg
+                mine = updater.parse_version(VERSION)
+                if err:
+                    if manual:
+                        self.flash(err.upper(), 5)
+                elif rel and mine and updater.is_newer(rel.version, mine):
+                    self.update_rel = rel
+                    if manual:
+                        self.status_until = 0
+                        self.offer_update()
+                elif manual:
+                    if not mine:
+                        self.flash(f"LATEST IS {rel.tag} - GIT PULL" if rel else "NO RELEASES YET", 6)
+                    else:
+                        self.flash(f"UP TO DATE ({self._version_label().upper()})", 4)
+            elif kind == "progress":
+                self.update_busy = f"DOWNLOADING {int(msg[1] * 100)}%"
+            elif kind == "ready":
+                self._install(msg[1], msg[2])
+                if self._closing:
+                    return
+            elif kind == "failed":
+                self.update_busy = None
+                self.flash(f"UPDATE FAILED: {msg[1]}", 8)
+
+    def _dialog(self, title: str, body: str, buttons) -> None:
+        if self.dialog:
+            self.dialog.close()
+        self.dialog = Dialog(self, title, body, buttons)
+
+    def offer_update(self) -> None:
+        rel = self.update_rel
+        if rel is None or self.update_busy:
+            return
+        open_page = lambda: webbrowser.open(rel.page_url)  # noqa: E731
+        where = updater.app_dir()
+        if where is None:
+            self._dialog("UPDATE AVAILABLE",
+                         f"{rel.tag} is out. You're running {APP_NAME} from source, so update it "
+                         "with `git pull` in the repo folder (or download the zip).",
+                         [("DOWNLOAD PAGE", open_page), ("OK", None)])
+            return
+        problem = updater.location_problem(where)
+        if problem:
+            self._dialog("CAN'T UPDATE HERE", problem, [("DOWNLOAD MANUALLY", open_page), ("OK", None)])
+            return
+        if not rel.asset_url:
+            self._dialog("UPDATE AVAILABLE", f"{rel.tag} is out but has no {updater.ASSET} yet. "
+                         "It may still be building - try again in a few minutes.",
+                         [("DOWNLOAD PAGE", open_page), ("OK", None)])
+            return
+        self._dialog(f"UPDATE {rel.tag} AVAILABLE",
+                     f"You have {self._version_label()}. {APP_NAME} will download the update, close, "
+                     "swap in the new files and reopen.\n\nYour settings, regions and history are "
+                     "saved separately and are kept.",
+                     [("INSTALL", self._start_download), ("WHAT'S NEW", open_page), ("LATER", None)])
+
+    def _start_download(self) -> None:
+        rel = self.update_rel
+        if rel is None or self.update_busy:
+            return
+        self.update_busy = "DOWNLOADING 0%"
+        stage = updater.staging_dir()
+
+        def work():
+            try:
+                stage.mkdir(parents=True, exist_ok=True)
+                z = updater.download(rel, stage / updater.ASSET,
+                                     progress=lambda f: self.upd_q.put(("progress", f)))
+                self.upd_q.put(("progress", 1.0))
+                new = updater.extract(z, stage / "new")
+                self.upd_q.put(("ready", new, rel))
+            except updater.UpdateError as e:
+                self.upd_q.put(("failed", str(e)))
+            except Exception as e:
+                self.upd_q.put(("failed", type(e).__name__.upper()))
+        threading.Thread(target=work, daemon=True, name="phosphor-update-download").start()
+
+    def _install(self, new, rel) -> None:
+        self.update_busy = "INSTALLING..."
+        try:
+            bat = updater.write_helper(updater.staging_dir(), updater.app_dir(), new, rel.tag, os.getpid())
+            updater.launch_helper(bat)
+        except Exception as e:
+            self.update_busy = None
+            msg = str(e) if isinstance(e, updater.UpdateError) else type(e).__name__.upper()
+            self.flash(f"UPDATE FAILED: {msg}", 8)
+            return
+        self.quit()          # the helper waits for us to exit, then swaps files and restarts us
+
     # ---------------------------------------------------------- debug view
     def show_debug(self) -> None:
         if self.debug_win and self.debug_win.winfo_exists():
@@ -739,6 +931,60 @@ class Overlay:
     def run(self) -> None:
         self.engine.start()
         self.root.mainloop()
+
+
+class Dialog:
+    """Small CRT-styled message box beside the overlay (no white system dialogs)."""
+
+    def __init__(self, app: Overlay, title: str, body: str, buttons) -> None:
+        self.app = app
+        th = app.th
+        self.win = w = tk.Toplevel(app.root, bg=th["dim"], padx=1, pady=1)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        inner = tk.Frame(w, bg=th["bg"], padx=12, pady=10, highlightthickness=1,
+                         highlightbackground=th["glow"])
+        inner.pack(fill="both", expand=True)
+        width = max(280, app.f_mid.measure("M") * 34)
+        tk.Label(inner, text=title, bg=th["bg"], fg=th["warn"], font=app.f_mid, anchor="w",
+                 justify="left").pack(fill="x")
+        tk.Label(inner, text=body, bg=th["bg"], fg=th["fg"], font=app.f_small, anchor="w",
+                 justify="left", wraplength=width).pack(fill="x", pady=(6, 10))
+        row = tk.Frame(inner, bg=th["bg"])
+        row.pack(fill="x")
+        self.buttons = []
+        for label, action in buttons:
+            b = tk.Label(row, text=f"[ {label} ]", bg=th["bg"], fg=th["mid"], font=app.f_small,
+                         cursor="hand2")
+            b.pack(side="left", padx=(0, 10))
+            b.bind("<Enter>", lambda e, b=b: b.configure(fg=th["fg"], bg=th["glow"]))
+            b.bind("<Leave>", lambda e, b=b: b.configure(fg=th["mid"], bg=th["bg"]))
+            b.bind("<Button-1>", lambda e, a=action: self._click(a))
+            self.buttons.append((label, b))
+        w.bind("<Escape>", lambda e: self.close())
+        w.update_idletasks()
+        self._place()
+
+    def _place(self) -> None:
+        root, w = self.app.root, self.win
+        dw, dh = w.winfo_reqwidth(), w.winfo_reqheight()
+        ox, oy, ow = root.winfo_rootx(), root.winfo_rooty(), root.winfo_width()
+        wa = winapi.work_area(root.winfo_id()) or (0, 0, root.winfo_screenwidth(), root.winfo_screenheight())
+        left, top, right, bottom = wa
+        x = ox + ow + 6 if ox + ow + 6 + dw <= right else max(left, ox - 6 - dw)
+        y = min(max(oy, top), bottom - dh)
+        w.geometry(f"+{int(x)}+{int(y)}")
+
+    def _click(self, action) -> None:
+        self.close()
+        if action:
+            action()
+
+    def close(self) -> None:
+        if self.win.winfo_exists():
+            self.win.destroy()
+        if self.app.dialog is self:
+            self.app.dialog = None
 
 
 class RegionPicker:

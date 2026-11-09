@@ -36,6 +36,7 @@ DEFAULTS: dict = {
     "idle_pause_sec": 0,          # 0 = off; otherwise auto-pause after this long with no EXP
     "exp_interval": 1.0,          # seconds between EXP reads
     "meso_interval": 2.0,
+    "auto_update": True,          # check GitHub for a newer release at startup / every 6 hours
     "level": None,                # learned from the HUD; needed when it shows % only
     "theme": "green",             # see phosphor/themes.py
     "hotkeys": {

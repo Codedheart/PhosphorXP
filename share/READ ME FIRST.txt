@@ -27,6 +27,11 @@ Hotkeys:  Ctrl+Shift+F6 pause   Ctrl+Shift+F7 reset
 
 Your settings are saved in %APPDATA%\PhosphorXP.
 
+Updates: keep the PhosphorXP folder somewhere of your own, like
+Documents or the Desktop (not Program Files). When a new version is
+out, the overlay shows "UPDATE v1.x >" - click it, then INSTALL.
+It updates itself and keeps your settings.
+
 Is it safe for the game? It only takes screenshots of the two small
 areas you select (like OBS or Discord). It never touches the game's
 memory or files and never presses keys for you. Still, any 3rd-party
